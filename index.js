@@ -1,10 +1,13 @@
 const _ = require('lodash')
-const { google } = require('googleapis')
 const axios = require('axios')
 const Papa = require('papaparse')
 
-const MASKDATA_URL = 'https://data.nhi.gov.tw/resource/mask/maskdata.csv'
-const SHEETS_ID = '1RZtzK7HRBk7yT9z7JYoLSXNqKEuK4JJn9Ve58kEPy4w'
+/**
+ * 取得 process.env.[key] 的輔助函式，且可以有預設值
+ */
+exports.getenv = (key, defaultval) => {
+  return _.get(process, ['env', key], defaultval)
+}
 
 const log = (...args) => {
   _.each(args, (arg, i) => {
@@ -12,19 +15,20 @@ const log = (...args) => {
   })
 }
 
-exports.getMaskdata = async () => {
-  const url = new URL(MASKDATA_URL)
+exports.getCsv = async url => {
+  url = new URL(url)
   url.searchParams.set('cachebust', +new Date())
-  const csv = await axios.get(url.href)
-  const masks = await new Promise((resolve, reject) => {
-    Papa.parse(_.trim(csv.data), {
-      encoding: 'utf8',
-      header: true,
-      error: reject,
-      complete: results => { resolve(_.get(results, 'data', [])) }
-    })
-  })
-  log(`取得 ${masks.length} 筆口罩數量資料`)
+  const csv = _.trim(_.get(await axios.get(url.href), 'data'))
+  return _.get(Papa.parse(csv, {
+    encoding: 'utf8',
+    header: true,
+  }), 'data', [])
+}
+
+const CSV_MASK = 'https://data.nhi.gov.tw/resource/mask/maskdata.csv'
+exports.getMasks = async () => {
+  const masks = await exports.getCsv(CSV_MASK)
+  console.log(`取得 ${masks.length} 筆口罩數量資料`)
   return _.fromPairs(_.map(masks, mask => [
     mask['醫事機構代碼'],
     {
@@ -36,88 +40,55 @@ exports.getMaskdata = async () => {
   ]))
 }
 
-const authSheetsAPI = async () => {
-  const auth = await google.auth.getClient({
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets'
-    ]
-  })
-  return google.sheets({ version: 'v4', auth })
+const CSV_STORE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT4tWc7zUcHQQ8LC_0276aOZNcIBu544YB9XrSRz7oq66q5lE3RHN5Ix2-4S3NL4bL-0zi5nKzE13eX/pub?gid=0&single=true&output=csv'
+exports.getStores = async () => {
+  const stores = await exports.getCsv(CSV_STORE)
+  console.log(`取得 ${stores.length} 筆店家資料`)
+  return stores
 }
 
-const sheetsValuesGet = async (sheetsAPI, request) => {
-  return new Promise((resolve, reject) => {
-    sheetsAPI.spreadsheets.values.get(
-      request,
-      (err, response) => err ? reject(err) : resolve(_.get(response, 'data.values'))
-    )
+exports.unparseCsv = (data) => {
+  return Papa.unparse(data, {
+    header: true
   })
 }
 
-const sheetsValuesBatchUpdate = async (sheetsAPI, request) => {
-  return new Promise((resolve, reject) => {
-    sheetsAPI.spreadsheets.values.batchUpdate(
-      request,
-      (err, response) => err ? reject(err) : resolve(_.get(response, 'data'))
-    )
-  })
-}
+exports.gcsCsvUpload = (() => {
+  const GCS_BUCKET = exports.getenv('GCS_BUCKET')
+  if (!GCS_BUCKET) return () => { throw new Error('GCS_BUCKET is required') }
 
-const cellToA1 = (() => {
-  const map1 = _.fromPairs(_.zip('0123456789abcdefghijklmnop'.split(''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')))
-  const strtr = str => _.map(str, c => _.get(map1, c, '?')).join('')
-  const colToA1 = col => {
-    let len = 1
-    while (col >= (26 ** (len + 1) - 1) / 25) len++
-    col -= (26 ** len - 1) / 25
-    return _.padStart(strtr(col.toString(26)), len, 'A')
-  }
-  return (col, row) => {
-    if (_.isInteger(col)) col = colToA1(col)
-    if (_.isNil(col)) col = ''
-    if (_.isNil(row)) row = ''
-    return `${col}${row}`
+  const { Storage } = require('@google-cloud/storage')
+  const storage = new Storage()
+  const bucket = storage.bucket(GCS_BUCKET)
+  return async (dest, data, maxAge = 30) => {
+    const file = bucket.file(dest)
+    await file.save(data, {
+      gzip: true,
+      // public: true,
+      validation: 'crc32c',
+      metadata: {
+        cacheControl: `public, max-age=${maxAge}`,
+        contentLanguage: 'zh',
+        contentType: 'text/csv'
+      }
+    })
   }
 })()
 
 exports.main = async () => {
-  const sheetsAPI = await authSheetsAPI()
+  const [masks, stores] = await Promise.all([
+    exports.getMasks(),
+    exports.getStores(),
+  ])
+  // log(masks, stores)
 
-  const masks = await exports.getMaskdata()
-  // log(_.get(masks, '0145080011'))
+  _.each(stores, store => {
+    const mask = _.get(masks, store.id)
+    if (!mask) return
+    _.each(['adult', 'child', 'mask_updated'], field => {
+      store[field] = mask[field]
+    })
+  })
 
-  // get sheets headers
-  const sheetHeaders = _.get(await sheetsValuesGet(sheetsAPI, {
-    dateTimeRenderOption: 'FORMATTED_STRING',
-    majorDimension: 'ROWS',
-    range: 'database!1:1',
-    spreadsheetId: SHEETS_ID,
-    valueRenderOption: 'UNFORMATTED_VALUE',
-  }), 0, [])
-  const colsA1 = _.fromPairs(_.map(sheetHeaders, (v, k) => [v, cellToA1(k + 1)]))
-  // log(colsA1)
-
-  const storeIds = _.get(await sheetsValuesGet(sheetsAPI, {
-    dateTimeRenderOption: 'FORMATTED_STRING',
-    majorDimension: 'COLUMNS',
-    range: `database!${colsA1.id}2:${colsA1.id}`,
-    spreadsheetId: SHEETS_ID,
-    valueRenderOption: 'UNFORMATTED_VALUE',
-  }), 0, [])
-  // log(_.slice(storeIds, 0, 10))
-
-  const data = _.map(['adult', 'child', 'mask_updated'], field => ({
-    range: `database!${colsA1[field]}2:${colsA1[field]}`,
-    majorDimension: 'COLUMNS',
-    values: [_.map(storeIds, id => _.toString(_.get(masks, [id, field], '')))]
-  }))
-  // log(...data)
-  log(await sheetsValuesBatchUpdate(sheetsAPI, {
-    spreadsheetId: SHEETS_ID,
-    resource: {
-      includeValuesInResponse: false,
-      valueInputOption: 'RAW',
-      data,
-    }
-  }))
+  await exports.gcsCsvUpload('ncov-mask-map/maskdata.csv', exports.unparseCsv(stores))
 }
