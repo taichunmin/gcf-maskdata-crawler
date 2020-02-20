@@ -33,7 +33,7 @@ exports.getMasks = async () => {
     mask['醫事機構代碼'],
     {
       id: mask['醫事機構代碼'],
-      adult: _.parseInt(mask['成人口罩總剩餘數']),
+      adult: _.parseInt(mask['成人口罩剩餘數']),
       child: _.parseInt(mask['兒童口罩剩餘數']),
       mask_updated: mask['來源資料時間'],
     }
