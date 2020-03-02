@@ -1,9 +1,9 @@
 const _ = require('lodash')
 const { google } = require('googleapis')
 const axios = require('axios')
+const Joi = require('@hapi/joi')
 const Papa = require('papaparse')
 
-const MASKDATA_URL = 'https://data.nhi.gov.tw/resource/mask/maskdata.csv'
 const SHEETS_ID = '1RZtzK7HRBk7yT9z7JYoLSXNqKEuK4JJn9Ve58kEPy4w'
 
 const log = (...args) => {
@@ -12,28 +12,52 @@ const log = (...args) => {
   })
 }
 
-exports.getMaskdata = async () => {
-  const url = new URL(MASKDATA_URL)
-  url.searchParams.set('cachebust', +new Date())
-  const csv = await axios.get(url.href)
-  const masks = await new Promise((resolve, reject) => {
-    Papa.parse(_.trim(csv.data), {
-      encoding: 'utf8',
-      header: true,
-      error: reject,
-      complete: results => { resolve(_.get(results, 'data', [])) }
-    })
+exports.joiStore = (() => {
+  const schema = Joi.object({
+    id: Joi.string().regex(/^\d+$/).required(),
+    name: Joi.string().trim().required(),
+    tel: Joi.string().replace(/\s/g, '').required(),
+    address: Joi.string().trim().required(),
+    type: Joi.string().trim().required(),
+    end: Joi.string().trim().equal('').strip(),
+    time: Joi.string().replace(/星期.{3}看診、?/g, '1').replace(/星期.{3}休診、?/g, '0').regex(/^[01]{21}$/).required(),
+    notice: Joi.string().trim().empty(Joi.any().equal('-')).default(''),
   })
-  log(`取得 ${masks.length} 筆口罩數量資料`)
-  return _.fromPairs(_.map(masks, mask => [
-    mask['醫事機構代碼'],
-    {
-      id: mask['醫事機構代碼'],
-      adult: _.parseInt(mask['成人口罩總剩餘數']),
-      child: _.parseInt(mask['兒童口罩剩餘數']),
-      mask_updated: mask['來源資料時間'],
+  return store => schema.validateAsync(store, { stripUnknown: true })
+})()
+
+exports.getStoreCsv = async url => {
+  url = new URL(url)
+  url.searchParams.set('cachebust', +new Date())
+  let csv = _.trim(_.get(await axios.get(url.href), 'data'))
+
+  // header 特殊處理
+  csv = csv.replace(/^[^\n]+/, 'id,name,f1,tel,address,f2,type,f3,f4,end,time,notice')
+
+  const stores = _.get(Papa.parse(csv, {
+    encoding: 'utf8',
+    header: true,
+  }), 'data', [])
+  for (let i = 0; i < stores.length; i++) {
+    try {
+      stores[i] = await exports.joiStore(stores[i])
+    } catch (err) {
+      stores[i].invalid = true
     }
+  }
+  return _.filter(stores, store => !store.invalid)
+}
+
+const CSV_PHARMACY = 'https://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21005-004'
+const CSV_CLINIC = 'https://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21004-004'
+/** 取得診所及藥局的資料並解析 */
+exports.getStores = async () => {
+  const stores = _.flatten(await Promise.all([
+    exports.getStoreCsv(CSV_PHARMACY),
+    exports.getStoreCsv(CSV_CLINIC),
   ]))
+  console.log(`取得 ${stores.length} 筆資料`)
+  return _.mapKeys(stores, 'id')
 }
 
 const authSheetsAPI = async () => {
@@ -83,8 +107,8 @@ const cellToA1 = (() => {
 exports.main = async () => {
   const sheetsAPI = await authSheetsAPI()
 
-  const masks = await exports.getMaskdata()
-  // log(_.get(masks, '0145080011'))
+  const stores = await exports.getStores()
+  // log(_.get(stores, '2317040012'))
 
   // get sheets headers
   const sheetHeaders = _.get(await sheetsValuesGet(sheetsAPI, {
@@ -106,10 +130,10 @@ exports.main = async () => {
   }), 0, [])
   // log(_.slice(storeIds, 0, 10))
 
-  const data = _.map(['adult', 'child', 'mask_updated'], field => ({
+  const data = _.map(['name', 'tel', 'address', 'type', 'time', 'notice'], field => ({
     range: `database!${colsA1[field]}2:${colsA1[field]}`,
     majorDimension: 'COLUMNS',
-    values: [_.map(storeIds, id => _.toString(_.get(masks, [id, field], '')))]
+    values: [_.map(storeIds, id => _.get(stores, [id, field], ''))]
   }))
   // log(...data)
   log(await sheetsValuesBatchUpdate(sheetsAPI, {

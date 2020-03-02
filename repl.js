@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const lo = require('lodash')
+const _ = require('lodash')
 const Repl = require('repl')
 
 const repl = Repl.start('> ')
@@ -16,6 +16,7 @@ repl.context.process.env = {
   DEBUG_COLORS: true
 }
 
-repl.context.lo = lo
+repl.context._ = _
 repl.context.log = require('debug')('app:repl')
-repl.context.index = require('./index')
+repl.context.Store = require('./stores')
+repl.context.Mask = require('./masks')
