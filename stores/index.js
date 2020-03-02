@@ -14,14 +14,14 @@ const log = (...args) => {
 
 exports.joiStore = (() => {
   const schema = Joi.object({
-    id: Joi.string().regex(/^\d+$/).required(),
+    id: Joi.string().alphanum().required(),
     name: Joi.string().trim().required(),
     tel: Joi.string().replace(/\s/g, '').required(),
-    address: Joi.string().trim().required(),
+    address: Joi.string().trim().empty('').default(''),
     type: Joi.string().trim().required(),
     end: Joi.string().trim().equal('').strip(),
-    time: Joi.string().replace(/星期.{3}看診、?/g, '1').replace(/星期.{3}休診、?/g, '0').regex(/^[01]{21}$/).required(),
-    notice: Joi.string().trim().empty(Joi.any().equal('-')).default(''),
+    time: Joi.string().replace(/星期.{3}看診、?/g, '1').replace(/星期.{3}休診、?/g, '0').regex(/^[01]{21}$/).empty('').default(''),
+    notice: Joi.string().trim().empty(Joi.any().equal('-', '')).default(''),
   })
   return store => schema.validateAsync(store, { stripUnknown: true })
 })()
@@ -42,19 +42,21 @@ exports.getStoreCsv = async url => {
     try {
       stores[i] = await exports.joiStore(stores[i])
     } catch (err) {
+      // if (!stores[i].end) console.log(err.message, stores[i])
       stores[i].invalid = true
     }
   }
   return _.filter(stores, store => !store.invalid)
 }
 
-const CSV_PHARMACY = 'https://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21005-004'
-const CSV_CLINIC = 'https://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21004-004'
-/** 取得診所及藥局的資料並解析 */
+/** 取得健保特約醫事機構的資料並解析 */
 exports.getStores = async () => {
   const stores = _.flatten(await Promise.all([
-    exports.getStoreCsv(CSV_PHARMACY),
-    exports.getStoreCsv(CSV_CLINIC),
+    exports.getStoreCsv('http://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21001-004'), // 醫學中心
+    exports.getStoreCsv('http://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21002-004'), // 區域醫院
+    exports.getStoreCsv('http://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21003-004'), // 地區醫院
+    exports.getStoreCsv('http://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21004-004'), // 診所
+    exports.getStoreCsv('http://data.nhi.gov.tw/Datasets/DatasetResource.ashx?rId=A21030000I-D21005-004'), // 藥局
   ]))
   console.log(`取得 ${stores.length} 筆資料`)
   return _.mapKeys(stores, 'id')
