@@ -20,3 +20,4 @@ repl.context._ = _
 repl.context.log = require('debug')('app:repl')
 repl.context.Store = require('./stores')
 repl.context.Mask = require('./masks')
+repl.context.Opened = require('./openeds')
