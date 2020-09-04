@@ -12,7 +12,7 @@
     "axios": "^0.19.2",
     "googleapis": "^47.0.0",
     "lodash": "^4.17.15",
-    "papaparse": "^5.1.1"
+    "papaparse": "^5.2.0"
   },
   "devDependencies": {
     "eslint": "^6.8.0",
